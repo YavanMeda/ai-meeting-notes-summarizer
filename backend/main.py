@@ -4,6 +4,30 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+import json
+
+from openai import OpenAI
+MODEL_NAME = "gpt-4o-mini"
+
+dotenv_path = Path(__file__).with_name(".env")
+print("Loading .env from:", dotenv_path)
+print(".env exists:", dotenv_path.exists())
+
+load_dotenv(dotenv_path=dotenv_path)
+
+print("OPENAI_API_KEY present:", bool(os.getenv("OPENAI_API_KEY")))
+
+api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    raise RuntimeError("OPENAI_API_KEY is not set")
+
+client = OpenAI()
+
 app = FastAPI(title="AI Meeting Notes Summarizer (Backend)")
 
 app.add_middleware(
@@ -41,6 +65,42 @@ class SummarizeResponse(BaseModel):
     open_questions: List[str]
 
 
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "meeting_title": {"type": "string"},
+        "summary_bullets": {"type": "array", "items": {"type": "string"}},
+        "decisions": {"type": "array", "items": {"type": "string"}},
+        "action_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "task": {"type": "string"},
+                    "owner": {"type": ["string", "null"]},
+                    "due_date": {"type": ["string", "null"]},
+                    "priority": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "source_quote": {"type": ["string", "null"]},
+                },
+                "required": ["task", "owner", "due_date", "priority", "source_quote"],
+            },
+        },
+        "risks_blockers": {"type": "array", "items": {"type": "string"}},
+        "open_questions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "meeting_title",
+        "summary_bullets",
+        "decisions",
+        "action_items",
+        "risks_blockers",
+        "open_questions",
+    ],
+}
+
+
 # -----------------------
 # Endpoints
 # -----------------------
@@ -57,21 +117,44 @@ def summarize(req: SummarizeRequest) -> SummarizeResponse:
         raise HTTPException(status_code=422, detail="Transcript cannot be blank.")
 
     # Stub response (no AI yet)
-    return SummarizeResponse(
-        meeting_title="Untitled meeting",
-        summary_bullets=[
-            "Placeholder summary bullet (AI will replace this later)."
-        ],
-        decisions=[],
-        action_items=[
-            ActionItem(
-                task="Send meeting notes to attendees",
-                owner=None,
-                due_date=None,
-                priority="medium",
-                source_quote=None,
-            )
-        ],
-        risks_blockers=[],
-        open_questions=[],
+    import json
+
+    system_prompt = (
+    "You are a meeting notes assistant.\n"
+    "Return ONLY valid JSON that matches the provided schema.\n"
+    "Rules:\n"
+    "- Only use information explicitly present in the transcript.\n"
+    "- Do not guess names, dates, or decisions.\n"
+    "- If an owner or due date is not stated, use null.\n"
+    "- Keep summary bullets short.\n"
+    "- Priority must be one of: low, medium, high.\n"
+    "- source_quote should be a short supporting quote from the transcript, or null.\n"
     )
+
+    try:
+        resp = client.responses.create(
+            model=MODEL_NAME,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": req.transcript},
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "meeting_summary",
+                    "strict": True,
+                    "schema": SUMMARY_SCHEMA,
+                }
+            },
+            max_output_tokens=700,
+        )
+
+        data = json.loads(resp.output_text)
+        return SummarizeResponse.model_validate(data)
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="Model returned invalid JSON.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI summarization failed: {str(e)}")
+
+
