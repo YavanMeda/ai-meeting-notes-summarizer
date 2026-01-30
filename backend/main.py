@@ -14,12 +14,8 @@ from openai import OpenAI
 MODEL_NAME = "gpt-4o-mini"
 
 dotenv_path = Path(__file__).with_name(".env")
-print("Loading .env from:", dotenv_path)
-print(".env exists:", dotenv_path.exists())
 
 load_dotenv(dotenv_path=dotenv_path)
-
-print("OPENAI_API_KEY present:", bool(os.getenv("OPENAI_API_KEY")))
 
 api_key = os.getenv("OPENAI_API_KEY")
 
